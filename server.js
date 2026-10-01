@@ -3,11 +3,13 @@ const { selectHandler } = require("./handlerRouter");
 const {
   saveTicketMapping,
   getTicketMapping,
+  updateTicketState,
 } = require("./ticketMapping");
-
+const { buildTicketCard } = require("./ticketCardBuilder");
 const {
   createGlpiWebhookHandler,
 } = require("./glpiWebHookHandler");
+
 
 const express = require("express");
 const crypto = require("crypto");
@@ -355,6 +357,18 @@ async function sendSlackTicketConfirmation(
   ticket,
   handlerName,
 ) {
+  const initialTicketState = {
+    glpi_ticket_id: ticketId,
+    issue: ticket.issue,
+    department: ticket.department,
+    priority: ticket.priority,
+    assigned_to: handlerName,
+    reporter_name: ticket.slackUser,
+    status: "OPEN",
+  };
+
+  const blocks = buildTicketCard(initialTicketState);
+
   const response = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: {
@@ -364,57 +378,8 @@ async function sendSlackTicketConfirmation(
     body: JSON.stringify({
       channel: channel,
       thread_ts: threadTs,
-
-      // Fallback text
       text: `Ticket #${ticketId} — OPEN`,
-
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text:
-              `🎫 *Ticket #${ticketId}*\n` +
-              `*${ticket.issue}*\n` +
-              `Department: ${ticket.department}\n` +
-              `Priority: ${ticket.priority}\n` +
-              `Assigned To: ${handlerName}\n` +
-              `Status: 🟢 *OPEN*`,
-          },
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "Acknowledge",
-              },
-              action_id: "acknowledge_ticket",
-              value: String(ticketId),
-            },
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "In Progress",
-              },
-              action_id: "in_progress_ticket",
-              value: String(ticketId),
-            },
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "Resolve",
-              },
-              action_id: "resolve_ticket",
-              value: String(ticketId),
-            },
-          ],
-        },
-      ],
+      blocks: blocks,
     }),
   });
 
@@ -567,6 +532,7 @@ app.post(
           slackChannel: slackChannelName,
           slackUser: slackUserName,
           slackTimestamp: event.ts,
+          slackUserId: event.user,
 
           createdAt: slackDate.toLocaleString("en-PK", {
             timeZone: "Asia/Karachi",
@@ -608,12 +574,22 @@ app.post(
             handlerName,
           );
 
-          await saveTicketMapping(
-            ticketId,
-            event.channel,
-            slackMessage.ts,
-            event.ts,
-          );
+          await saveTicketMapping({
+            glpiTicketId: ticketId,
+            slackChannelId: event.channel,
+            slackMessageTs: slackMessage.ts,
+            slackThreadTs: event.ts,
+
+            issue: ticket.issue,
+            department: ticket.department,
+            priority: ticket.priority,
+            assignedTo: handlerName,
+
+            reporterName: ticket.slackUser,
+            reporterSlackUserId: ticket.slackUserId,
+
+            status: "OPEN",
+          });
 
           console.log(`Ticket mapping saved for Ticket #${ticketId}`);
 
@@ -663,18 +639,20 @@ app.post(
 
       try {
         // ----------------------------------------
-        // 1. Ticket fetch karo
+        // 1. Existing complete state DB se lo
         // ----------------------------------------
-        const ticket = await getGlpiTicket(ticketId);
+        const existingState = await getTicketMapping(ticketId);
+
+        if (!existingState) {
+          console.log(`No DB mapping found for Ticket #${ticketId}`);
+          return;
+        }
 
         // ----------------------------------------
-        // 2. Department extract karo
+        // 2. Department DB se lo
         // ----------------------------------------
-        const departmentMatch = ticket.content?.match(/^Department:\s*(.+)$/im);
-
-        const department = departmentMatch
-          ? departmentMatch[1].trim().toLowerCase()
-          : null;
+        const department =
+          existingState.department?.toLowerCase() || null;
 
         console.log("Department:", department);
 
@@ -683,20 +661,27 @@ app.post(
         // ----------------------------------------
         if (department === "it") {
           if (!isAuthorizedITAgent(userId)) {
-            await fetch("https://slack.com/api/chat.postEphemeral", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                channel: payload.channel.id,
-                user: userId,
-                text: "⛔ You are not authorized to update this ticket.",
-              }),
-            });
+            await fetch(
+              "https://slack.com/api/chat.postEphemeral",
+              {
+                method: "POST",
+                headers: {
+                  Authorization:
+                    `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  channel: payload.channel.id,
+                  user: userId,
+                  text: "⛔ You are not authorized to update this ticket.",
+                }),
+              }
+            );
 
-            console.log(`Unauthorized IT ticket action by ${userId}`);
+            console.log(
+              `Unauthorized IT ticket action by ${userId}`
+            );
+
             return;
           }
 
@@ -704,19 +689,14 @@ app.post(
         }
 
         // ----------------------------------------
-        // 4. Action → GLPI status mapping
+        // 4. Action → GLPI status
         // ----------------------------------------
         let glpiStatusId;
-        let slackStatus;
 
-        if (actionId === "in_progress_ticket") {
-          // GLPI: Processing (assigned)
-          glpiStatusId = 2;
-          slackStatus = "in_progress";
+        if (actionId === "planned_ticket") {
+          glpiStatusId = 3; // Processing (planned)
         } else if (actionId === "resolve_ticket") {
-          // GLPI: Solved
-          glpiStatusId = 5;
-          slackStatus = "resolved";
+          glpiStatusId = 5; // Solved
         } else {
           console.log(`Unhandled action: ${actionId}`);
           return;
@@ -725,36 +705,121 @@ app.post(
         // ----------------------------------------
         // 5. GLPI status update
         // ----------------------------------------
-        const updatedTicket = await updateGlpiTicketStatus(
+        await updateGlpiTicketStatus(
           ticketId,
-          glpiStatusId,
+          glpiStatusId
         );
 
-        console.log(`Ticket #${ticketId} → ${updatedTicket.status.name}`);
+        // ----------------------------------------
+        // 6. Fresh ticket GLPI se lo
+        // ----------------------------------------
+        const freshTicket =
+          await getGlpiTicket(ticketId);
 
-        // ----------------------------------------
-        // 6. Same Slack card update
-        // ----------------------------------------
-        await updateSlackTicketCard(
-          payload.channel.id,
-          payload.message.ts,
-          ticketId,
-          updatedTicket,
-          slackStatus,
+        console.log(
+          `Ticket #${ticketId} → ${freshTicket.status?.name}`
         );
 
-        console.log(`Slack card updated for Ticket #${ticketId}`);
+        // ----------------------------------------
+        // 7. Priority convert
+        // ----------------------------------------
+        const priorities = {
+          1: "Very Low",
+          2: "Low",
+          3: "Medium",
+          4: "High",
+          5: "Very High",
+          6: "Major",
+        };
+
+        const priorityName =
+          priorities[freshTicket.priority] || null;
+
+        // ----------------------------------------
+        // 8. Assigned user extract
+        // ----------------------------------------
+        const assignedUser =
+          freshTicket.team?.find(
+            (member) =>
+              member.role === "assigned" &&
+              member.type === "User"
+          );
+
+        let assignedTo = null;
+
+        if (assignedUser) {
+          const fullName = [
+            assignedUser.firstname,
+            assignedUser.realname,
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          assignedTo =
+            fullName ||
+            assignedUser.display_name ||
+            assignedUser.name ||
+            null;
+        }
+
+        // ----------------------------------------
+        // 9. DB state update
+        // ----------------------------------------
+        await updateTicketState(
+          ticketId,
+          {
+            issue: freshTicket.name || null,
+
+            // Department already DB mein correct hai.
+            // null dene par COALESCE old value preserve karega.
+            department: null,
+
+            priority: priorityName,
+            assignedTo: assignedTo,
+            status: freshTicket.status?.name || null,
+          }
+        );
+
+        // ----------------------------------------
+        // 10. COMPLETE state dobara DB se lo
+        // ----------------------------------------
+        const updatedState =
+          await getTicketMapping(ticketId);
+
+        if (!updatedState) {
+          console.log(
+            `Updated DB state missing for Ticket #${ticketId}`
+          );
+          return;
+        }
+
+        // ----------------------------------------
+        // 11. SAME canonical card builder/update
+        // ----------------------------------------
+        await updateSlackTicket(updatedState);
+
+        console.log(
+          `Slack card immediately updated for Ticket #${ticketId}`
+        );
+
       } catch (error) {
-        console.error("Ticket processing error:", error.message);
+        console.error(
+          "Ticket processing error:",
+          error.message
+        );
       }
+
     } catch (error) {
-      console.error("Interaction error:", error.message);
+      console.error(
+        "Interaction error:",
+        error.message
+      );
 
       if (!res.headersSent) {
         res.sendStatus(500);
       }
     }
-  },
+  }
 );
 
 app.post("/glpi/webhook", createGlpiWebhookHandler(getGlpiTicket), (req, res) => {
