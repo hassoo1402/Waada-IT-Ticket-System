@@ -97,8 +97,50 @@ async function updateTicketState(
   );
 }
 
+async function getHandlerSlackUserId(glpiUserId) {
+  const [rows] = await pool.query(
+    `SELECT slack_user_ids
+     FROM handlers
+     WHERE glpi_user_id = ?
+       AND active = 1
+     LIMIT 1`,
+    [glpiUserId]
+  );
+
+  return rows[0]?.slack_user_ids || null;
+}
+
+async function getRandomITNotificationRecipients(count = 2) {
+  // IT notification pool:
+  // Hassam + saare active IT Executives
+  const [rows] = await pool.query(
+    `SELECT glpi_user_id, handler_name, slack_user_ids
+     FROM handlers
+     WHERE active = 1
+       AND (
+         category = 'IT Executive'
+         OR glpi_user_id = 10
+       )
+       AND slack_user_ids IS NOT NULL`
+  );
+
+  if (rows.length < count) {
+    throw new Error(
+      `Not enough active handlers for IT notification. Found ${rows.length}`
+    );
+  }
+
+  // Shuffle without changing DB / round-robin state
+  const shuffled = [...rows].sort(() => Math.random() - 0.5);
+
+  // First 2 unique handlers
+  return shuffled.slice(0, count);
+}
+
 module.exports = {
   saveTicketMapping,
   getTicketMapping,
   updateTicketState,
+  getHandlerSlackUserId,
+  getRandomITNotificationRecipients,
 };

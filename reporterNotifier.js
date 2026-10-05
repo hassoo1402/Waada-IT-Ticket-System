@@ -121,7 +121,85 @@ async function notifyReporterAboutFollowup(
   );
 }
 
+async function notifyAssignedHandler(slackUserId, ticket) {
+  if (!slackUserId) {
+    console.log(
+      `Assigned handler Slack ID missing for Ticket #${ticket.id}`
+    );
+    return;
+  }
+
+  const blocks = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text:
+          `🎫 *New Ticket Assigned to You — #${ticket.id}*\n\n` +
+          `*Issue:* ${ticket.issue}\n` +
+          `*Department:* ${ticket.department}\n` +
+          `*Priority:* ${ticket.priority}\n` +
+          `*Status:* ${ticket.status}\n\n` +
+          `*Reported By:* ${ticket.reportedBy}\n` +
+          `*Reported At:* ${ticket.reportedAt}\n` +
+          `*Channel:* ${ticket.channel}\n\n` +
+          `*Description:*\n${ticket.description}`,
+      },
+    },
+  ];
+
+  // Permalink available ho to button show karo
+  if (ticket.permalink) {
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "View Ticket in Channel",
+          },
+          url: ticket.permalink,
+          action_id: "view_ticket_in_channel",
+        },
+      ],
+    });
+  }
+
+  const response = await fetch(
+    "https://slack.com/api/chat.postMessage",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channel: slackUserId,
+
+        // Slack notification/fallback text
+        text: `New Ticket Assigned to You — #${ticket.id}`,
+
+        blocks,
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!data.ok) {
+    throw new Error(
+      `Assigned handler notification failed: ${data.error}`
+    );
+  }
+
+  console.log(
+    `Assigned handler notified for Ticket #${ticket.id}`
+  );
+}
+
 module.exports = {
   notifyReporter,
   notifyReporterAboutFollowup,
+  notifyAssignedHandler,
 };
