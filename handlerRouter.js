@@ -8,22 +8,20 @@ async function getNextITExecutive() {
     await connection.beginTransaction();
 
     const [dbInfo] = await connection.query(
-        "SELECT DATABASE() AS current_database"
-        );
+      "SELECT DATABASE() AS current_database",
+    );
 
-        const [rrRows] = await connection.query(
-        "SELECT * FROM round_robin_state"
-        );
+    const [rrRows] = await connection.query("SELECT * FROM round_robin_state");
 
-        console.log("NODE DATABASE:", dbInfo);
-        console.log("NODE ROUND ROBIN:", rrRows);
+    console.log("NODE DATABASE:", dbInfo);
+    console.log("NODE ROUND ROBIN:", rrRows);
 
     // Round-robin ki current state ko lock/read karo
     const [stateRows] = await connection.query(
       `SELECT last_handler_id
        FROM round_robin_state
        WHERE category = 'IT Executives'
-       FOR UPDATE`
+       FOR UPDATE`,
     );
 
     const lastHandlerId = stateRows[0]?.last_handler_id ?? null;
@@ -34,7 +32,7 @@ async function getNextITExecutive() {
        FROM handlers
        WHERE category = 'IT Executive'
          AND active = TRUE
-       ORDER BY id`
+       ORDER BY id`,
     );
 
     if (handlers.length === 0) {
@@ -46,7 +44,7 @@ async function getNextITExecutive() {
 
     if (lastHandlerId !== null) {
       const lastIndex = handlers.findIndex(
-        (handler) => handler.id === lastHandlerId
+        (handler) => handler.id === lastHandlerId,
       );
 
       if (lastIndex !== -1) {
@@ -60,14 +58,14 @@ async function getNextITExecutive() {
 
     // Yaad rakho kis handler ko latest ticket mila
     const [result] = await connection.query(
-        `UPDATE round_robin_state
+      `UPDATE round_robin_state
         SET last_handler_id = ?
         WHERE category = 'IT Executives'`,
-        [nextHandler.id]
-        );
+      [nextHandler.id],
+    );
 
-        console.log("NEXT HANDLER:", nextHandler);
-        console.log("ROUND ROBIN UPDATE:", result);
+    console.log("NEXT HANDLER:", nextHandler);
+    console.log("ROUND ROBIN UPDATE:", result);
 
     await connection.commit();
 
@@ -143,5 +141,5 @@ async function selectHandler(issue) {
 }
 
 module.exports = {
-    selectHandler,
+  selectHandler,
 };

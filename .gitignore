@@ -1,3 +1,7 @@
 /node_modules
 .env
 abc.txt
+glpicrypt.key
+oauth.pem
+oauth.pub
+old_glpi_backup.sql

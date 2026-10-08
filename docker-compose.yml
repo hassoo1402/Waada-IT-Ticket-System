@@ -33,6 +33,7 @@ services:
 
     volumes:
       - glpi_data:/var/glpi
+      - ./plugins/slackqueue:/var/www/glpi/plugins/slackqueue
 
     depends_on:
       - db
@@ -53,7 +54,7 @@ services:
 
     environment:
       # Docker internal networking overrides
-      GLPI_URL: http://glpi
+      GLPI_URL: "${GLPI_URL}"
       DB_HOST: db
       DB_PORT: 3306
       DB_NAME: slack_integration
@@ -61,7 +62,24 @@ services:
     depends_on:
       - db
       - glpi
+  
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    restart: unless-stopped
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    environment:
+      RABBITMQ_DEFAULT_USER: glpi
+      RABBITMQ_DEFAULT_PASS: localrabbitpass
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
 
 volumes:
   db_data:
   glpi_data:
+  rabbitmq_data:

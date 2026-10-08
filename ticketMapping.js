@@ -1,5 +1,18 @@
 const pool = require("./db");
 
+async function getTicketBySlackThread(slackChannelId, threadTs) {
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM ticket_mappings
+     WHERE slack_channel_id = ?
+       AND slack_thread_ts = ?
+     LIMIT 1`,
+    [slackChannelId, threadTs]
+  );
+
+  return rows[0] || null;
+}
+
 async function saveTicketMapping({
   glpiTicketId,
   slackChannelId,
@@ -143,4 +156,5 @@ module.exports = {
   updateTicketState,
   getHandlerSlackUserId,
   getRandomITNotificationRecipients,
+  getTicketBySlackThread
 };

@@ -4,14 +4,15 @@ const {
   saveTicketMapping,
   getTicketMapping,
   updateTicketState,
-  getRandomITNotificationRecipients,
+  getHandlerSlackUserId,
+  getTicketBySlackThread
 } = require("./ticketMapping");
 const { buildTicketCard } = require("./ticketCardBuilder");
 const { createGlpiWebhookHandler } = require("./glpiWebHookHandler");
 const { notifyAssignedHandler } = require("./reporterNotifier");
-const { getHandlerSlackUserId } = require("./ticketMapping");
 const { updateSlackTicket } = require("./slackTicketUpdater");
 const { notifyReporter } = require("./reporterNotifier");
+const { downloadSlackFile, uploadGlpiDocument, attachDocumentToTicket } = require("./TicketImageHandler");
 const pool = require("./db");
 
 const express = require("express");
@@ -243,6 +244,29 @@ async function getGlpiAccessToken() {
   return data.access_token;
 }
 
+async function getGlpiLegacySession() {
+  const response = await fetch(
+    `${process.env.GLPI_LEGACY_URL}/initSession`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `user_token ${process.env.GLPI_LEGACY_USER_TOKEN}`,
+        "App-Token": process.env.GLPI_LEGACY_APP_TOKEN,
+      },
+    }
+  );
+
+  const result = await response.json();
+
+  if (!response.ok || !result.session_token) {
+    throw new Error(
+      `GLPI legacy session failed: ${response.status} ${JSON.stringify(result)}`
+    );
+  }
+
+  return result.session_token;
+}
+
 async function createGlpiTicket(ticket) {
   const accessToken = await getGlpiAccessToken();
 
@@ -290,6 +314,36 @@ ${ticket.description}`,
   if (!response.ok) {
     throw new Error(
       `GLPI ticket creation failed: ${response.status} ${JSON.stringify(result)}`,
+    );
+  }
+
+  return result;
+}
+
+async function addGlpiFollowup(ticketId, text) {
+  const accessToken = await getGlpiAccessToken();
+
+  const payload = {
+    content: text,
+  };
+
+  const response = await fetch(
+    `${process.env.GLPI_URL}/api.php/v2.3/Assistance/Ticket/${ticketId}/Timeline/Followup`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      `GLPI follow-up creation failed: ${response.status} ${JSON.stringify(result)}`,
     );
   }
 
@@ -773,6 +827,104 @@ app.post(
 
       const event = req.body.event;
 
+      console.log(
+        "SLACK EVENT DEBUG:",
+        JSON.stringify(
+          {
+            type: event?.type,
+            user: event?.user,
+            channel: event?.channel,
+            ts: event?.ts,
+            thread_ts: event?.thread_ts,
+            text: event?.text,
+            bot_id: event?.bot_id,
+            subtype: event?.subtype,
+          },
+          null,
+          2,
+        ),
+      );
+
+      // =====================================================
+      // EXISTING TICKET: Reporter reply in ticket Slack thread
+      // =====================================================
+      if (
+        event.type === "message" &&
+        event.thread_ts &&
+        !event.bot_id &&
+        event.subtype !== "bot_message"
+      ) {
+        try {
+          const mapping = await getTicketBySlackThread(
+            event.channel,
+            event.thread_ts,
+          );
+
+          if (!mapping) {
+            return res.sendStatus(200);
+          }
+
+          if (event.user !== mapping.reporter_slack_user_id) {
+            console.log(
+              `Thread reply ignored: user ${event.user} is not reporter of GLPI ticket ${mapping.glpi_ticket_id}`,
+            );
+            return res.sendStatus(200);
+          }
+
+          const followupText = (event.text || "").trim();
+          const files = event.files || [];
+
+          if (!followupText && files.length === 0) {
+            return res.sendStatus(200);
+          }
+
+          // Text follow-up
+          if (followupText) {
+            console.log(
+              `Adding reporter follow-up to GLPI ticket ${mapping.glpi_ticket_id}:`,
+              followupText,
+            );
+
+            await addGlpiFollowup(mapping.glpi_ticket_id, followupText);
+
+            console.log(
+              `Follow-up added successfully to GLPI Ticket #${mapping.glpi_ticket_id}`,
+            );
+          }
+
+          // File/image attachments
+          if (files.length > 0) {
+            const sessionToken = await getGlpiLegacySession();
+
+            for (const slackFile of files) {
+              console.log(`Downloading Slack file: ${slackFile.name}`);
+
+              const downloadedFile = await downloadSlackFile(slackFile);
+
+              const documentId = await uploadGlpiDocument(
+                downloadedFile,
+                sessionToken,
+              );
+
+              await attachDocumentToTicket(
+                documentId,
+                mapping.glpi_ticket_id,
+                sessionToken,
+              );
+
+              console.log(
+                `Attached ${downloadedFile.filename} to GLPI Ticket #${mapping.glpi_ticket_id}`,
+              );
+            }
+          }
+
+          return res.sendStatus(200);
+        } catch (error) {
+          console.error("Ticket thread processing error:", error);
+          return res.sendStatus(200);
+        }
+      }
+
       if (event.type === "message" && !event.bot_id && !event.subtype) {
         const text = event.text;
 
@@ -812,6 +964,14 @@ app.post(
 
         // Description ki first line = issue
         const issue = description.split("\n")[0].trim();
+
+        // Issue must contain at least one letter or number
+        const hasMeaningfulText = /[\p{L}\p{N}]/u.test(issue);
+
+        if (!issue || !hasMeaningfulText) {
+          console.log("Invalid ticket issue - ignored.");
+          return res.sendStatus(200);
+        }
 
         if (!issue) {
           console.log("Ticket issue missing - ignored.");
@@ -1025,7 +1185,7 @@ app.post(
           };
 
           // TEMP TEST ONLY
-        //   notificationSlackIds = notificationSlackIds.map(() => "U0C15897SB1");
+          //   notificationSlackIds = notificationSlackIds.map(() => "U0C15897SB1");
 
           // ----------------------------------------
           // 9. Send DM notification(s)
