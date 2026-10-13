@@ -371,6 +371,7 @@ async function sendSlackTicketConfirmation(
   ticketId,
   ticket,
   handlerName,
+  status
 ) {
   const initialTicketState = {
     glpi_ticket_id: ticketId,
@@ -379,7 +380,7 @@ async function sendSlackTicketConfirmation(
     priority: ticket.priority,
     assigned_to: handlerName,
     reporter_name: ticket.slackUser,
-    status: "OPEN",
+    status: status,
   };
 
   const blocks = buildTicketCard(initialTicketState);
@@ -393,7 +394,7 @@ async function sendSlackTicketConfirmation(
     body: JSON.stringify({
       channel: channel,
       thread_ts: threadTs,
-      text: `Ticket #${ticketId} — OPEN`,
+      text: `Ticket #${ticketId} — ${status}`,
       blocks: blocks,
     }),
   });
@@ -742,6 +743,7 @@ app.post(
             ticketId,
             ticket,
             handlerName,
+            fullGlpiTicket.status?.name || "Processing (Assigned)",
           );
 
           const ticketPermalink = await getSlackMessagePermalink(
@@ -886,6 +888,15 @@ app.post(
 
           for (const slackUserId of notificationSlackIds) {
             await notifyAssignedHandler(slackUserId, notificationTicket);
+          }
+
+          try {
+            await notifyReporter(ticket.slackUserId, fullGlpiTicket);
+          } catch (error) {
+            console.error(
+              `Reporter DM failed for Ticket #${ticketId}:`,
+              error.message,
+            );
           }
 
           // ----------------------------------------

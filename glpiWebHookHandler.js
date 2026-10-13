@@ -235,7 +235,7 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
 // HTTP WEBHOOK HANDLER
 // ==================================================
 
-function createGlpiWebhookHandler(getGlpiTicket) {
+function createGlpiWebhookHandler() {
   return (req, res) => {
     let rawBody = "";
 
