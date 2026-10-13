@@ -908,7 +908,11 @@ app.post(
             `Slack confirmation + ${notificationSlackIds.length} handler notification(s) completed for Ticket #${ticketId}`,
           );
         } catch (error) {
-          console.error("Ticket processing error:", error.message);
+               console.error("Ticket processing error:", {
+                 message: error.message,
+                 cause: error.cause?.code,
+                 details: error.cause?.message,
+               });
         }
       }
     }
@@ -1095,7 +1099,11 @@ app.post(
 
         console.log(`Slack card immediately updated for Ticket #${ticketId}`);
       } catch (error) {
-        console.error("Ticket processing error:", error.message);
+        console.error("Ticket processing error:", {
+          message: error.message,
+          cause: error.cause?.code,
+          details: error.cause?.message,
+        });
       }
     } catch (error) {
       console.error("Interaction error:", error.message);
