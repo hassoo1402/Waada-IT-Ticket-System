@@ -92,6 +92,16 @@ async function getTicketMapping(glpiTicketId) {
   return rows[0] || null;
 }
 
+async function saveReporterDmDetails(glpiTicketId, channel, ts) {
+  await pool.execute(
+    `UPDATE ticket_mappings
+     SET reporter_dm_channel = ?,
+         reporter_dm_ts = ?
+     WHERE glpi_ticket_id = ?`,
+    [channel, ts, glpiTicketId]
+  );
+}
+
 async function updateTicketState(
   glpiTicketId,
   {
@@ -169,5 +179,6 @@ module.exports = {
   getHandlerSlackUserId,
   getRandomITNotificationRecipients,
   getTicketBySlackThread,
-  getReporterGlpiId
+  getReporterGlpiId,
+  saveReporterDmDetails,
 };

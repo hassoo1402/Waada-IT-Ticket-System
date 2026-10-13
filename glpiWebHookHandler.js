@@ -60,7 +60,7 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
       mapping.reporter_slack_user_id,
       {
         ticketId,
-
+        followupId: Number(payload.item.id),
         ticketName:
           payload.parent_item?.name ||
           mapping.issue ||
