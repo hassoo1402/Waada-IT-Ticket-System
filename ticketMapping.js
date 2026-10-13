@@ -1,5 +1,17 @@
 const pool = require("./db");
 
+async function getReporterGlpiId(slackUserId) {
+  const [rows] = await pool.query(
+    `SELECT glpi_user_id
+     FROM reporter_glpi_users
+     WHERE slack_user_id = ?
+     LIMIT 1`,
+    [slackUserId]
+  );
+
+  return rows[0]?.glpi_user_id || null;
+}
+
 async function getTicketBySlackThread(slackChannelId, threadTs) {
   const [rows] = await pool.query(
     `SELECT *
@@ -156,5 +168,6 @@ module.exports = {
   updateTicketState,
   getHandlerSlackUserId,
   getRandomITNotificationRecipients,
-  getTicketBySlackThread
+  getTicketBySlackThread,
+  getReporterGlpiId
 };

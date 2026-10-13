@@ -58,6 +58,7 @@ services:
       DB_HOST: db
       DB_PORT: 3306
       DB_NAME: slack_integration
+      RABBITMQ_URL: ${RABBITMQ_URL}
 
     depends_on:
       - db

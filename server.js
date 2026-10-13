@@ -5,14 +5,21 @@ const {
   getTicketMapping,
   updateTicketState,
   getHandlerSlackUserId,
-  getTicketBySlackThread
+  getTicketBySlackThread,
+  getReporterGlpiId,
 } = require("./ticketMapping");
 const { buildTicketCard } = require("./ticketCardBuilder");
-const { createGlpiWebhookHandler } = require("./glpiWebHookHandler");
+const { createGlpiWebhookHandler, processGlpiWebhook } = require("./glpiWebHookHandler");
 const { notifyAssignedHandler } = require("./reporterNotifier");
 const { updateSlackTicket } = require("./slackTicketUpdater");
 const { notifyReporter } = require("./reporterNotifier");
-const { downloadSlackFile, uploadGlpiDocument, attachDocumentToTicket } = require("./TicketImageHandler");
+const { startRabbitMQConsumer } = require("./rabbitMqConsumer");
+const { connectRabbitMQ } = require("./rabbiqmq");
+const {
+  downloadSlackFile,
+  uploadGlpiDocument,
+  attachDocumentToTicket,
+} = require("./TicketImageHandler");
 const pool = require("./db");
 
 const express = require("express");
@@ -122,89 +129,6 @@ function isAuthorizedITAgent(userId) {
   return authorizedUsers.includes(userId);
 }
 
-// async function updateSlackTicketCard(
-//   channel,
-//   messageTs,
-//   ticketId,
-//   ticket,
-//   status,
-// ) {
-//   const statusText =
-//     status === "in_progress" ? "🟡 *IN PROGRESS*" : "✅ *RESOLVED*";
-
-//   // Department GLPI content se extract karo
-//   const departmentMatch = ticket.content?.match(/^Department:\s*(.+)$/im);
-//   const department = departmentMatch ? departmentMatch[1].trim() : "Unknown";
-
-//   const blocks = [
-//     {
-//       type: "section",
-//       text: {
-//         type: "mrkdwn",
-//         text:
-//           `🎫 *Ticket #${ticketId}*\n` +
-//           `*${ticket.name}*\n` +
-//           `Department: ${department}\n` +
-//           `Priority: ${getPriorityName(ticket.priority)}\n` +
-//           `Status: ${statusText}`,
-//       },
-//     },
-//   ];
-
-//   // Resolve button sirf active ticket par
-//   if (status !== "resolved") {
-//     blocks.push({
-//       type: "actions",
-//       elements: [
-//         {
-//           type: "button",
-//           text: {
-//             type: "plain_text",
-//             text: "Resolve",
-//           },
-//           action_id: "resolve_ticket",
-//           value: String(ticketId),
-//         },
-//       ],
-//     });
-//   }
-
-//   const response = await fetch("https://slack.com/api/chat.update", {
-//     method: "POST",
-//     headers: {
-//       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-//       "Content-Type": "application/json",
-//     },
-//     body: JSON.stringify({
-//       channel,
-//       ts: messageTs,
-//       text: `Ticket #${ticketId} — ${status.toUpperCase()}`,
-//       blocks,
-//     }),
-//   });
-
-//   const data = await response.json();
-
-//   if (!data.ok) {
-//     throw new Error(`Slack update failed: ${data.error}`);
-//   }
-
-//   return data;
-// }
-
-// function getPriorityName(priority) {
-//   const priorities = {
-//     1: "Very Low",
-//     2: "Low",
-//     3: "Medium",
-//     4: "High",
-//     5: "Very High",
-//     6: "Major",
-//   };
-
-//   return priorities[priority] || "Unknown";
-// }
-
 app.use((req, res, next) => {
   console.log("\n>>> INCOMING REQUEST");
   console.log("Method:", req.method);
@@ -245,22 +169,19 @@ async function getGlpiAccessToken() {
 }
 
 async function getGlpiLegacySession() {
-  const response = await fetch(
-    `${process.env.GLPI_LEGACY_URL}/initSession`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `user_token ${process.env.GLPI_LEGACY_USER_TOKEN}`,
-        "App-Token": process.env.GLPI_LEGACY_APP_TOKEN,
-      },
-    }
-  );
+  const response = await fetch(`${process.env.GLPI_LEGACY_URL}/initSession`, {
+    method: "GET",
+    headers: {
+      Authorization: `user_token ${process.env.GLPI_LEGACY_USER_TOKEN}`,
+      "App-Token": process.env.GLPI_LEGACY_APP_TOKEN,
+    },
+  });
 
   const result = await response.json();
 
   if (!response.ok || !result.session_token) {
     throw new Error(
-      `GLPI legacy session failed: ${response.status} ${JSON.stringify(result)}`
+      `GLPI legacy session failed: ${response.status} ${JSON.stringify(result)}`,
     );
   }
 
@@ -310,6 +231,8 @@ ${ticket.description}`,
   );
 
   const result = await response.json();
+  const ticketId = result.id;
+  const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
 
   if (!response.ok) {
     throw new Error(
@@ -320,11 +243,42 @@ ${ticket.description}`,
   return result;
 }
 
-async function addGlpiFollowup(ticketId, text) {
+async function addTicketRequester(ticketId, glpiUserId) {
   const accessToken = await getGlpiAccessToken();
+
+  const response = await fetch(
+    `${process.env.GLPI_URL}/api.php/v2.3/Assistance/Ticket/${ticketId}/TeamMember`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "User",
+        id: glpiUserId,
+        role: "requester",
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Requester assignment failed: ${response.status} ${await response.text()}`,
+    );
+  }
+}
+
+async function addGlpiFollowup(ticketId, text, slackUserId) {
+  const accessToken = await getGlpiAccessToken();
+
+  const reporterGlpiId = await getReporterGlpiId(slackUserId);
 
   const payload = {
     content: text,
+    ...(reporterGlpiId && {
+      user: { id: reporterGlpiId },
+    }),
   };
 
   const response = await fetch(
@@ -511,284 +465,6 @@ function verifySlackRequest(req, res, next) {
   next();
 }
 
-// IMPORTANT: raw body required for Slack signature verification
-// app.post(
-//   "/slack/events",
-//   express.raw({ type: "application/json" }),
-//   verifySlackRequest,
-//   async (req, res) => {
-//     req.body = JSON.parse(req.rawBody);
-//     // Slack URL verification
-//     if (req.body.type === "url_verification") {
-//       console.log("Slack is verifying our endpoint...");
-
-//       return res.json({
-//         challenge: req.body.challenge,
-//       });
-//     }
-
-//     // Slack message event
-//     if (req.body.type === "event_callback") {
-//       const eventId = req.body.event_id;
-
-//       // Duplicate Slack event ignore karo
-//       if (processedEvents.has(eventId)) {
-//         console.log(`Duplicate event ignored: ${eventId}`);
-//         return res.sendStatus(200);
-//       }
-
-//       // Event ko processed mark karo
-//       processedEvents.add(eventId);
-
-//       setTimeout(
-//         () => {
-//           processedEvents.delete(eventId);
-//         },
-//         10 * 60 * 1000,
-//       );
-
-//       const event = req.body.event;
-
-//       if (event.type === "message" && !event.bot_id && !event.subtype) {
-//         const text = event.text;
-
-//         // 2. Department tag nikalo
-//         // Example: #TICKET #operations
-//         const departmentMatch = text.match(/^#([a-zA-Z0-9_-]+)(?:\s|\n)+/);
-
-//         if (!departmentMatch) {
-//           console.log("Department tag missing - ignored.");
-//           return res.sendStatus(200);
-//         }
-
-//         const department = departmentMatch[1].toLowerCase();
-
-//         const rawDescription = text.slice(departmentMatch[0].length).trim();
-
-//         if (!rawDescription) {
-//           console.log("Ticket description missing - ignored.");
-//           return res.sendStatus(200);
-//         }
-
-//         // Priority line find karo
-//         // Example: priority: high
-//         const priorityMatch = rawDescription.match(
-//           /^priority:\s*(low|medium|high|critical)\s*$/im,
-//         );
-
-//         // Priority mention na ho to Medium
-//         const priority = priorityMatch
-//           ? priorityMatch[1].toLowerCase()
-//           : "medium";
-
-//         // Priority wali line description se remove karo
-//         const description = rawDescription
-//           .replace(/^priority:\s*(low|medium|high|critical)\s*$/im, "")
-//           .trim();
-
-//         // Description ki first line = issue
-//         const issue = description.split("\n")[0].trim();
-
-//         if (!issue) {
-//           console.log("Ticket issue missing - ignored.");
-//           return res.sendStatus(200);
-//         }
-
-//         const slackDate = new Date(Number(event.ts) * 1000);
-
-//         const slackUserName = await getSlackUserName(event.user);
-//         const slackChannelName = await getSlackChannelName(event.channel);
-
-//         // 4. Ticket object
-//         const ticket = {
-//           department: department,
-//           issue: issue,
-//           description: description,
-//           priority: priority,
-
-//           slackChannel: slackChannelName,
-//           slackUser: slackUserName,
-//           slackTimestamp: event.ts,
-//           slackUserId: event.user,
-
-//           createdAt: slackDate.toLocaleString("en-PK", {
-//             timeZone: "Asia/Karachi",
-//           }),
-//         };
-
-//         // 3. Mandatory fields validation
-//         if (
-//           !ticket.department ||
-//           !ticket.issue ||
-//           !ticket.description ||
-//           !ticket.priority
-//         ) {
-//           console.log("Invalid ticket template - ignored.");
-//           return res.sendStatus(200);
-//         }
-
-//         // 4. Valid ticket
-//         console.log("\n========== VALID TICKET ==========");
-//         console.log(ticket);
-//         console.log("==================================\n");
-
-//         try {
-//           // ----------------------------------------
-//           // 1. Select handler
-//           // ----------------------------------------
-//           const handlerId = await selectHandler(ticket.issue);
-
-//           // ----------------------------------------
-//           // 2. Create GLPI ticket
-//           // ----------------------------------------
-//           const glpiTicket = await createGlpiTicket(ticket);
-//           const ticketId = glpiTicket.id;
-
-//           // ----------------------------------------
-//           // 3. Assign handler in GLPI
-//           // ----------------------------------------
-//           await assignHandlerToTicket(ticketId, handlerId);
-
-//           // ----------------------------------------
-//           // 4. Fresh GLPI ticket after assignment
-//           // ----------------------------------------
-//           const fullGlpiTicket = await getGlpiTicket(ticketId);
-
-//           const handlerName = getAssignedHandlerName(fullGlpiTicket);
-
-//           // ----------------------------------------
-//           // 5. Send ticket card in Slack channel
-//           // ----------------------------------------
-//           const slackMessage = await sendSlackTicketConfirmation(
-//             event.channel,
-//             event.ts,
-//             ticketId,
-//             ticket,
-//             handlerName,
-//           );
-
-//           const ticketPermalink = await getSlackMessagePermalink(
-//             event.channel,
-//             slackMessage.ts,
-//           );
-
-//           // ----------------------------------------
-//           // 6. Save complete ticket mapping
-//           // ----------------------------------------
-//           await saveTicketMapping({
-//             glpiTicketId: ticketId,
-//             slackChannelId: event.channel,
-//             slackMessageTs: slackMessage.ts,
-//             slackThreadTs: event.ts,
-
-//             issue: ticket.issue,
-//             department: ticket.department,
-//             priority: ticket.priority,
-//             assignedTo: handlerName,
-
-//             reporterName: ticket.slackUser,
-//             reporterSlackUserId: ticket.slackUserId,
-
-//             status: fullGlpiTicket.status?.name || "Processing (assigned)",
-//           });
-
-//           console.log(`Ticket mapping saved for Ticket #${ticketId}`);
-
-//           // ----------------------------------------
-//           // 7. Get assigned handler Slack ID
-//           // ----------------------------------------
-//           // ----------------------------------------
-//           // 7. Prepare notification recipients
-//           // ----------------------------------------
-
-//           let notificationSlackIds = [];
-//           let recipients = [];
-
-//           // Check whether selected handler is an IT Executive
-//           const [handlerRows] = await pool.query(
-//             `SELECT category
-//    FROM handlers
-//    WHERE glpi_user_id = ?
-//      AND active = 1
-//    LIMIT 1`,
-//             [handlerId],
-//           );
-
-//           const isITExecutive = handlerRows[0]?.category === "IT Executive";
-
-//           if (isITExecutive) {
-//             // IT ticket → randomly notify 2 people
-//             // Pool = Hassam + active IT Executives
-//             recipients = await getRandomITNotificationRecipients(2);
-
-//             notificationSlackIds = recipients.map(
-//               (handler) => handler.slack_user_ids,
-//             );
-//           } else {
-//             // Existing behaviour for all other ticket types
-//             const handlerSlackUserId = await getHandlerSlackUserId(handlerId);
-
-//             if (handlerSlackUserId) {
-//               notificationSlackIds = [handlerSlackUserId];
-//             }
-//           }
-
-//           // ----------------------------------------
-//           // 8. Prepare DM ticket details
-//           // ----------------------------------------
-
-//           const notificationTicket = {
-//             id: ticketId,
-//             issue: ticket.issue,
-//             department: ticket.department,
-//             priority: ticket.priority,
-
-//             status: fullGlpiTicket.status?.name || "Processing (assigned)",
-
-//             reportedBy: ticket.slackUser,
-//             reportedAt: ticket.createdAt,
-//             channel: ticket.slackChannel,
-//             description: ticket.description,
-//             permalink: ticketPermalink,
-//           };
-
-//           // ----------------------------------------
-//           // 9. Send DM notification(s)
-//           // ----------------------------------------
-
-//           for (const slackUserId of notificationSlackIds) {
-//             await notifyAssignedHandler(slackUserId, notificationTicket);
-//           }
-
-//           // ----------------------------------------
-//           // 10. Log successful notification recipients
-//           // ----------------------------------------
-
-//           if (isITExecutive) {
-//             console.log(
-//               `IT Ticket #${ticketId} DM successfully sent to: ${recipients
-//                 .map((handler) => handler.handler_name)
-//                 .join(" + ")}`,
-//             );
-//           } else {
-//             console.log(
-//               `Ticket #${ticketId} assigned handler notification successfully sent`,
-//             );
-//           }
-
-//           console.log(
-//             `Slack confirmation + ${notificationSlackIds.length} handler notification(s) completed for Ticket #${ticketId}`,
-//           );
-//         } catch (error) {
-//           console.error("Ticket processing error:", error.message);
-//         }
-//       }
-//     }
-
-//     res.sendStatus(200);
-//   },
-// );
-
 app.post(
   "/slack/events",
   express.raw({ type: "application/json" }),
@@ -961,6 +637,16 @@ app.post(
         const description = rawDescription
           .replace(/^priority:\s*(low|medium|high|critical)\s*$/im, "")
           .trim();
+        
+        if (description.length > 50) {
+          await slackClient.chat.postEphemeral({
+            channel: event.channel,
+            user: event.user,
+            text: "❌ Complaint text limit is only 50 characters.",
+          });
+
+          return res.sendStatus(200);
+        }
 
         // Description ki first line = issue
         const issue = description.split("\n")[0].trim();
@@ -1416,31 +1102,27 @@ app.post(
 
 app.post(
   "/glpi/webhook",
-  createGlpiWebhookHandler(getGlpiTicket),
-  (req, res) => {
-    let rawBody = "";
-
-    req.setEncoding("utf8");
-
-    req.on("data", (chunk) => {
-      rawBody += chunk;
-    });
-
-    req.on("end", () => {
-      console.log("\n========== GLPI WEBHOOK ==========");
-      console.log("Raw Body:", rawBody);
-      console.log("==================================\n");
-
-      res.sendStatus(200);
-    });
-  },
+  createGlpiWebhookHandler(getGlpiTicket)
 );
 
-const PORT = process.env.port || 3000;
+const PORT = process.env.PORT || process.env.port || 3000;
 
-// getGlpiTicket(7);
-// updateGlpiTicketStatus(7, 2);
+async function startServer() {
+  try {
+    await connectRabbitMQ();
 
-app.listen(PORT, () => {
-  console.log(`Slack integration running on port ${PORT}`);
-});
+    await startRabbitMQConsumer(
+      processGlpiWebhook,
+      getGlpiTicket
+    );
+
+    app.listen(PORT, () => {
+      console.log(`Slack integration running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server startup failed:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
