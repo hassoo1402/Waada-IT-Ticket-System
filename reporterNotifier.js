@@ -285,13 +285,13 @@ async function uploadImageToSlack(channelId, threadTs, image) {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: JSON.stringify({
+      body: new URLSearchParams({
         filename: image.filename,
-        length: image.buffer.length,
+        length: String(image.buffer.length),
       }),
-    }
+    },
   );
 
   const uploadData = await uploadResponse.json();
