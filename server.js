@@ -9,7 +9,10 @@ const {
   getReporterGlpiId,
 } = require("./ticketMapping");
 const { buildTicketCard } = require("./ticketCardBuilder");
-const { createGlpiWebhookHandler, processGlpiWebhook } = require("./glpiWebHookHandler");
+const {
+  createGlpiWebhookHandler,
+  processGlpiWebhook,
+} = require("./glpiWebHookHandler");
 const { notifyAssignedHandler } = require("./reporterNotifier");
 const { updateSlackTicket } = require("./slackTicketUpdater");
 const { notifyReporter } = require("./reporterNotifier");
@@ -232,7 +235,7 @@ ${ticket.description}`,
 
   const result = await response.json();
   const ticketId = result.id;
-  const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
+//   const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
 
   if (!response.ok) {
     throw new Error(
@@ -243,42 +246,39 @@ ${ticket.description}`,
   return result;
 }
 
-async function addTicketRequester(ticketId, glpiUserId) {
-  const accessToken = await getGlpiAccessToken();
+// async function addTicketRequester(ticketId, glpiUserId) {
+//   const accessToken = await getGlpiAccessToken();
 
-  const response = await fetch(
-    `${process.env.GLPI_URL}/api.php/v2.3/Assistance/Ticket/${ticketId}/TeamMember`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        type: "User",
-        id: glpiUserId,
-        role: "requester",
-      }),
-    },
-  );
+//   const response = await fetch(
+//     `${process.env.GLPI_URL}/api.php/v2.3/Assistance/Ticket/${ticketId}/TeamMember`,
+//     {
+//       method: "POST",
+//       headers: {
+//         Authorization: `Bearer ${accessToken}`,
+//         "Content-Type": "application/json",
+//       },
+//       body: JSON.stringify({
+//         type: "User",
+//         id: glpiUserId,
+//         role: "requester",
+//       }),
+//     },
+//   );
 
-  if (!response.ok) {
-    throw new Error(
-      `Requester assignment failed: ${response.status} ${await response.text()}`,
-    );
-  }
-}
+//   if (!response.ok) {
+//     throw new Error(
+//       `Requester assignment failed: ${response.status} ${await response.text()}`,
+//     );
+//   }
+// }
 
 async function addGlpiFollowup(ticketId, text, slackUserId) {
   const accessToken = await getGlpiAccessToken();
 
-  const reporterGlpiId = await getReporterGlpiId(slackUserId);
+//   const reporterGlpiId = await getReporterGlpiId(slackUserId);
 
   const payload = {
     content: text,
-    ...(reporterGlpiId && {
-      user: { id: reporterGlpiId },
-    }),
   };
 
   const response = await fetch(
@@ -561,7 +561,7 @@ app.post(
               followupText,
             );
 
-            await addGlpiFollowup(mapping.glpi_ticket_id, followupText);
+            await addGlpiFollowup(mapping.glpi_ticket_id, followupText, event.user);
 
             console.log(
               `Follow-up added successfully to GLPI Ticket #${mapping.glpi_ticket_id}`,
@@ -637,13 +637,36 @@ app.post(
         const description = rawDescription
           .replace(/^priority:\s*(low|medium|high|critical)\s*$/im, "")
           .trim();
-        
+
+        console.log("Description length:", description.length);
+        console.log("Description:", description);
+
         if (description.length > 50) {
-          await slackClient.chat.postEphemeral({
-            channel: event.channel,
-            user: event.user,
-            text: "❌ Complaint text limit is only 50 characters.",
-          });
+          try {
+            const response = await fetch(
+              "https://slack.com/api/chat.postEphemeral",
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  channel: event.channel,
+                  user: event.user,
+                  text: "❌ Complaint text limit is only 50 characters.",
+                }),
+              },
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.ok) {
+              console.error("Slack validation error:", result.error);
+            }
+          } catch (error) {
+            console.error("Failed to send Slack validation error:", error);
+          }
 
           return res.sendStatus(200);
         }
@@ -1100,10 +1123,7 @@ app.post(
   },
 );
 
-app.post(
-  "/glpi/webhook",
-  createGlpiWebhookHandler(getGlpiTicket)
-);
+app.post("/glpi/webhook", createGlpiWebhookHandler(getGlpiTicket));
 
 const PORT = process.env.PORT || process.env.port || 3000;
 
@@ -1111,10 +1131,7 @@ async function startServer() {
   try {
     await connectRabbitMQ();
 
-    await startRabbitMQConsumer(
-      processGlpiWebhook,
-      getGlpiTicket
-    );
+    await startRabbitMQConsumer(processGlpiWebhook, getGlpiTicket);
 
     app.listen(PORT, () => {
       console.log(`Slack integration running on port ${PORT}`);
