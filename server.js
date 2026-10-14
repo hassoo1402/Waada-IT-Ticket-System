@@ -511,7 +511,8 @@ app.post(
         event.type === "message" &&
         event.thread_ts &&
         !event.bot_id &&
-        event.subtype !== "bot_message" && !/^\s*#it(?:\s|$)/i.test(event.text || "")
+        event.subtype !== "bot_message" &&
+        !/^\s*#it(?:\s|$)/i.test(event.text || "")
       ) {
         try {
           const mapping = await getTicketBySlackThread(
@@ -1063,18 +1064,31 @@ app.post(
         console.log(`Ticket #${ticketId} → ${freshTicket.status?.name}`);
 
         // ----------------------------------------
-        // 7. Priority convert
+        // 7. GLPI Priority, Urgency, Impact, Type
         // ----------------------------------------
-        const priorities = {
+        const levels = {
           1: "Very Low",
           2: "Low",
           3: "Medium",
           4: "High",
           5: "Very High",
-          6: "Major",
         };
 
-        const priorityName = priorities[freshTicket.priority] || null;
+        const types = {
+          1: "Incident",
+          2: "Request",
+        };
+
+        const priorityName =
+          Number(freshTicket.priority) === 6
+            ? "Major"
+            : levels[Number(freshTicket.priority)] || null;
+
+        const urgencyName = levels[Number(freshTicket.urgency)] || null;
+
+        const impactName = levels[Number(freshTicket.impact)] || null;
+
+        const typeName = types[Number(freshTicket.type)] || null;
 
         // ----------------------------------------
         // 8. Assigned user extract
