@@ -33,6 +33,9 @@ async function saveTicketMapping({
   issue,
   department,
   priority,
+  urgency,
+  impact,
+  ticketType,
   assignedTo,
   reporterName,
   reporterSlackUserId,
@@ -47,12 +50,15 @@ async function saveTicketMapping({
       issue,
       department,
       priority,
+      urgency,
+      impact,
+      ticket_type,
       assigned_to,
       reporter_name,
       reporter_slack_user_id,
       status
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
     ON DUPLICATE KEY UPDATE
       slack_channel_id = VALUES(slack_channel_id),
@@ -61,6 +67,9 @@ async function saveTicketMapping({
       issue = VALUES(issue),
       department = VALUES(department),
       priority = VALUES(priority),
+      urgency = VALUES(urgency),
+      impact = VALUES(impact),
+      ticket_type = VALUES(ticket_type),
       assigned_to = VALUES(assigned_to),
       reporter_name = VALUES(reporter_name),
       reporter_slack_user_id = VALUES(reporter_slack_user_id),
@@ -73,6 +82,9 @@ async function saveTicketMapping({
       issue,
       department,
       priority,
+      urgency,
+      impact,
+      ticketType,
       assignedTo,
       reporterName,
       reporterSlackUserId,
@@ -110,6 +122,9 @@ async function updateTicketState(
     priority,
     assignedTo,
     status,
+    urgency,
+    impact,
+    ticketType,
   }
 ) {
   await pool.query(
@@ -119,7 +134,10 @@ async function updateTicketState(
        department = COALESCE(?, department),
        priority = COALESCE(?, priority),
        assigned_to = COALESCE(?, assigned_to),
-       status = COALESCE(?, status)
+       status = COALESCE(?, status),
+       urgency = COALESCE(?, urgency),
+       impact = COALESCE(?, impact),
+       ticket_type = COALESCE(?, ticket_type)
      WHERE glpi_ticket_id = ?`,
     [
       issue ?? null,
@@ -127,6 +145,9 @@ async function updateTicketState(
       priority ?? null,
       assignedTo ?? null,
       status ?? null,
+      urgency ?? null,
+      impact ?? null,
+      ticketType ?? null,
       glpiTicketId,
     ]
   );

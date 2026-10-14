@@ -25,7 +25,6 @@ const {
 } = require("./TicketImageHandler");
 const { getGlpiLegacySession } = require("./glpiAuth");
 
-
 const pool = require("./db");
 
 const express = require("express");
@@ -174,7 +173,6 @@ async function getGlpiAccessToken() {
   return data.access_token;
 }
 
-
 async function createGlpiTicket(ticket) {
   const accessToken = await getGlpiAccessToken();
 
@@ -219,7 +217,7 @@ ${ticket.description}`,
 
   const result = await response.json();
   const ticketId = result.id;
-//   const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
+  //   const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
 
   if (!response.ok) {
     throw new Error(
@@ -259,7 +257,7 @@ ${ticket.description}`,
 async function addGlpiFollowup(ticketId, text, slackUserId) {
   const accessToken = await getGlpiAccessToken();
 
-//   const reporterGlpiId = await getReporterGlpiId(slackUserId);
+  //   const reporterGlpiId = await getReporterGlpiId(slackUserId);
 
   const payload = {
     content: text,
@@ -371,7 +369,7 @@ async function sendSlackTicketConfirmation(
   ticketId,
   ticket,
   handlerName,
-  status
+  status,
 ) {
   const initialTicketState = {
     glpi_ticket_id: ticketId,
@@ -513,7 +511,7 @@ app.post(
         event.type === "message" &&
         event.thread_ts &&
         !event.bot_id &&
-        event.subtype !== "bot_message"
+        event.subtype !== "bot_message" && !/^\s*#it(?:\s|$)/i.test(event.text || "")
       ) {
         try {
           const mapping = await getTicketBySlackThread(
@@ -546,7 +544,11 @@ app.post(
               followupText,
             );
 
-            await addGlpiFollowup(mapping.glpi_ticket_id, followupText, event.user);
+            await addGlpiFollowup(
+              mapping.glpi_ticket_id,
+              followupText,
+              event.user,
+            );
 
             console.log(
               `Follow-up added successfully to GLPI Ticket #${mapping.glpi_ticket_id}`,
@@ -730,20 +732,53 @@ app.post(
           // ----------------------------------------
           // 4. Fresh GLPI ticket after assignment
           // ----------------------------------------
+
           const fullGlpiTicket = await getGlpiTicket(ticketId);
 
+          // ----------------------------------------
+          // 4. Read actual GLPI ticket values
+          // ----------------------------------------
+
+          const levels = {
+            1: "Very Low",
+            2: "Low",
+            3: "Medium",
+            4: "High",
+            5: "Very High",
+          };
+
+          const types = {
+            1: "Incident",
+            2: "Request",
+          };
+
+          const initialPriority =
+            Number(fullGlpiTicket.priority) === 6
+              ? "Major"
+              : levels[Number(fullGlpiTicket.priority)] || null;
+
+          const initialUrgency = levels[Number(fullGlpiTicket.urgency)] || null;
+
+          const initialImpact = levels[Number(fullGlpiTicket.impact)] || null;
+
+          const initialType = types[Number(fullGlpiTicket.type)] || null;
+
           const handlerName = getAssignedHandlerName(fullGlpiTicket);
+
+          const initialStatus =
+            fullGlpiTicket.status?.name || "Processing (Assigned)";
 
           // ----------------------------------------
           // 5. Send ticket card in Slack channel
           // ----------------------------------------
+
           const slackMessage = await sendSlackTicketConfirmation(
             event.channel,
-            event.ts,
+            event.thread_ts || event.ts,
             ticketId,
             ticket,
             handlerName,
-            fullGlpiTicket.status?.name || "Processing (Assigned)",
+            initialStatus,
           );
 
           const ticketPermalink = await getSlackMessagePermalink(
@@ -754,6 +789,7 @@ app.post(
           // ----------------------------------------
           // 6. Save complete ticket mapping
           // ----------------------------------------
+
           await saveTicketMapping({
             glpiTicketId: ticketId,
             slackChannelId: event.channel,
@@ -762,13 +798,15 @@ app.post(
 
             issue: ticket.issue,
             department: ticket.department,
-            priority: ticket.priority,
+            priority: initialPriority,
+            urgency: initialUrgency,
+            impact: initialImpact,
+            ticketType: initialType,
             assignedTo: handlerName,
 
             reporterName: ticket.slackUser,
             reporterSlackUserId: ticket.slackUserId,
-
-            status: fullGlpiTicket.status?.name || "Processing (assigned)",
+            status: initialStatus,
           });
 
           console.log(`Ticket mapping saved for Ticket #${ticketId}`);
@@ -780,30 +818,25 @@ app.post(
           let notificationSlackIds = [];
           let recipients = [];
 
-          // Check whether selected handler is an IT Executive
           const [handlerRows] = await pool.query(
             `SELECT category
-             FROM handlers
-             WHERE glpi_user_id = ?
-               AND active = 1
-             LIMIT 1`,
+   FROM handlers
+   WHERE glpi_user_id = ?
+     AND active = 1
+   LIMIT 1`,
             [handlerId],
           );
 
           const isITExecutive = handlerRows[0]?.category === "IT Executive";
 
           if (isITExecutive) {
-            // ----------------------------------------
-            // PRIMARY:
-            // Actual GLPI-assigned IT Executive
-            // ----------------------------------------
-
+            // Primary: actual assigned IT Executive
             const [primaryRows] = await pool.query(
               `SELECT glpi_user_id, handler_name, slack_user_ids
-               FROM handlers
-               WHERE glpi_user_id = ?
-                 AND active = 1
-               LIMIT 1`,
+     FROM handlers
+     WHERE glpi_user_id = ?
+       AND active = 1
+     LIMIT 1`,
               [handlerId],
             );
 
@@ -815,23 +848,17 @@ app.post(
               );
             }
 
-            // ----------------------------------------
-            // SECONDARY:
-            // One random person from remaining pool
-            // Pool = Hassam + other active IT Executives
-            // Primary handler MUST be excluded
-            // ----------------------------------------
-
+            // Secondary: random eligible backup, excluding primary
             const [backupPool] = await pool.query(
               `SELECT glpi_user_id, handler_name, slack_user_ids
-               FROM handlers
-               WHERE active = 1
-                 AND (
-                   category = 'IT Executive'
-                   OR glpi_user_id = 10
-                 )
-                 AND glpi_user_id != ?
-                 AND slack_user_ids IS NOT NULL`,
+     FROM handlers
+     WHERE active = 1
+       AND (
+         category = 'IT Executive'
+         OR glpi_user_id = 10
+       )
+       AND glpi_user_id != ?
+       AND slack_user_ids IS NOT NULL`,
               [handlerId],
             );
 
@@ -849,7 +876,7 @@ app.post(
               randomBackup.slack_user_ids,
             ];
           } else {
-            // Existing behaviour for DevOps / Network / Communication etc.
+            // DevOps / Network / Communication etc.
             const handlerSlackUserId = await getHandlerSlackUserId(handlerId);
 
             console.log("DEBUG handlerId:", handlerId);
@@ -861,16 +888,15 @@ app.post(
           }
 
           // ----------------------------------------
-          // 8. Prepare DM ticket details
+          // 8. Prepare handler notification details
           // ----------------------------------------
 
           const notificationTicket = {
             id: ticketId,
             issue: ticket.issue,
             department: ticket.department,
-            priority: ticket.priority,
-
-            status: fullGlpiTicket.status?.name || "Processing (assigned)",
+            priority: initialPriority,
+            status: initialStatus,
 
             reportedBy: ticket.slackUser,
             reportedAt: ticket.createdAt,
@@ -879,16 +905,17 @@ app.post(
             permalink: ticketPermalink,
           };
 
-          // TEMP TEST ONLY
-          //   notificationSlackIds = notificationSlackIds.map(() => "U0C15897SB1");
-
           // ----------------------------------------
-          // 9. Send DM notification(s)
+          // 9. Send handler notification(s)
           // ----------------------------------------
 
           for (const slackUserId of notificationSlackIds) {
             await notifyAssignedHandler(slackUserId, notificationTicket);
           }
+
+          // ----------------------------------------
+          // 10. Send reporter DM
+          // ----------------------------------------
 
           try {
             await notifyReporter(ticket.slackUserId, fullGlpiTicket);
@@ -900,7 +927,7 @@ app.post(
           }
 
           // ----------------------------------------
-          // 10. Log successful notification recipients
+          // 11. Log notification completion
           // ----------------------------------------
 
           if (isITExecutive) {
@@ -919,11 +946,11 @@ app.post(
             `Slack confirmation + ${notificationSlackIds.length} handler notification(s) completed for Ticket #${ticketId}`,
           );
         } catch (error) {
-               console.error("Ticket processing error:", {
-                 message: error.message,
-                 cause: error.cause?.code,
-                 details: error.cause?.message,
-               });
+          console.error("Ticket processing error:", {
+            message: error.message,
+            cause: error.cause?.code,
+            details: error.cause?.message,
+          });
         }
       }
     }
@@ -1072,14 +1099,14 @@ app.post(
         // ----------------------------------------
         await updateTicketState(ticketId, {
           issue: freshTicket.name || null,
-
-          // Department already DB mein correct hai.
-          // null dene par COALESCE old value preserve karega.
           department: null,
 
           priority: priorityName,
           assignedTo: assignedTo,
           status: freshTicket.status?.name || null,
+          urgency: urgencyName,
+          impact: impactName,
+          ticketType: typeName,
         });
 
         // ----------------------------------------

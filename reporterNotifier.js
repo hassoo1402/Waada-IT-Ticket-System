@@ -27,6 +27,10 @@ async function notifyReporter(slackUserId, ticket) {
     `*${ticket.name}*\n\n` +
     `👤 *Assigned To:* ${mapping.assigned_to || "Unassigned"}\n` +
     `📌 *Status:* ${ticket.status?.name || "Unknown"}\n` +
+    `🚨 *Urgency:* ${mapping.urgency || "Unknown"}\n` +
+    `🎯 *Impact:* ${mapping.impact || "Unknown"}\n` +
+    `⚡ *Priority:* ${mapping.priority || "Unknown"}\n` +
+    `📋 *Type:* ${mapping.ticket_type || "Unknown"}\n` +
     `🕒 *Updated At:* ${formattedDate}`;
 
   const isExistingDm = Boolean(

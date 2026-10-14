@@ -1,22 +1,13 @@
-const {
-  getTicketMapping,
-  updateTicketState,
-} = require("./ticketMapping");
+const { getTicketMapping, updateTicketState } = require("./ticketMapping");
 const { publishNotification } = require("./rabbiqmq");
-const {
-  updateSlackTicket,
-} = require("./slackTicketUpdater");
+const { updateSlackTicket } = require("./slackTicketUpdater");
 const {
   notifyReporter,
   notifyReporterAboutFollowup,
 } = require("./reporterNotifier");
 
-
 async function processGlpiWebhook(payload, getGlpiTicket) {
-  console.log(
-    "GLPI WEBHOOK PAYLOAD:",
-    JSON.stringify(payload, null, 2)
-  );
+  console.log("GLPI WEBHOOK PAYLOAD:", JSON.stringify(payload, null, 2));
 
   // ==================================================
   // 1. NEW FOLLOWUP / REPLY
@@ -43,43 +34,30 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
     const authorId = Number(payload.item.user?.id);
 
     const teamMember = payload.parent_item?.team?.find(
-      (member) => Number(member.id) === authorId
+      (member) => Number(member.id) === authorId,
     );
 
     const repliedBy =
       teamMember?.display_name ||
-      [teamMember?.firstname, teamMember?.realname]
-        .filter(Boolean)
-        .join(" ") ||
+      [teamMember?.firstname, teamMember?.realname].filter(Boolean).join(" ") ||
       payload.item.user?.name ||
       "Unknown";
 
     // ---------- Reporter DM ----------
 
-    await notifyReporterAboutFollowup(
-      mapping.reporter_slack_user_id,
-      {
-        ticketId,
-        followupId: Number(payload.item.id),
-        ticketName:
-          payload.parent_item?.name ||
-          mapping.issue ||
-          "Ticket",
+    await notifyReporterAboutFollowup(mapping.reporter_slack_user_id, {
+      ticketId,
+      followupId: Number(payload.item.id),
+      ticketName: payload.parent_item?.name || mapping.issue || "Ticket",
 
-        reply: payload.item.content,
+      reply: payload.item.content,
 
-        repliedBy,
+      repliedBy,
 
-        repliedAt:
-          payload.item.date_creation ||
-          payload.item.date,
+      repliedAt: payload.item.date_creation || payload.item.date,
 
-        status:
-          payload.parent_item?.status?.name ||
-          mapping.status ||
-          "Unknown",
-      }
-    );
+      status: payload.parent_item?.status?.name || mapping.status || "Unknown",
+    });
 
     console.log(`Followup processed for Ticket #${ticketId}`);
     return;
@@ -89,10 +67,7 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
   // 2. NORMAL TICKET UPDATE
   // ==================================================
 
-  if (
-    payload.event !== "update" ||
-    !payload.item?.id
-  ) {
+  if (payload.event !== "update" || !payload.item?.id) {
     return;
   }
 
@@ -122,42 +97,48 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
     6: "Major",
   };
 
+  const fiveLevels = {
+    1: "Very Low",
+    2: "Low",
+    3: "Medium",
+    4: "High",
+    5: "Very High",
+  };
+
+  const urgencyName = fiveLevels[ticket.urgency] || null;
+  const impactName = fiveLevels[ticket.impact] || null;
+
+  const ticketTypes = {
+    1: "Incident",
+    2: "Request",
+  };
+
+  const typeName = ticketTypes[ticket.type] || null;
+
   const priorityName = priorities[ticket.priority] || null;
 
   // ---------- Assigned User ----------
 
   const assignedUser = ticket.team?.find(
-    (member) =>
-      member.role === "assigned" &&
-      member.type === "User"
+    (member) => member.role === "assigned" && member.type === "User",
   );
 
   let assignedTo = null;
 
   if (assignedUser) {
-    const fullName = [
-      assignedUser.firstname,
-      assignedUser.realname,
-    ]
+    const fullName = [assignedUser.firstname, assignedUser.realname]
       .filter(Boolean)
       .join(" ");
 
     assignedTo =
-      fullName ||
-      assignedUser.display_name ||
-      assignedUser.name ||
-      null;
+      fullName || assignedUser.display_name || assignedUser.name || null;
   }
 
   // ---------- Department ----------
 
-  const departmentMatch = ticket.content?.match(
-    /^Department:\s*(.+)$/im
-  );
+  const departmentMatch = ticket.content?.match(/^Department:\s*(.+)$/im);
 
-  const department = departmentMatch
-    ? departmentMatch[1].trim()
-    : null;
+  const department = departmentMatch ? departmentMatch[1].trim() : null;
 
   // ---------- Status ----------
 
@@ -167,22 +148,36 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
   // 3. CHECK MEANINGFUL CHANGES
   // ==================================================
 
-  const statusChanged =
-    status !== null &&
-    existingState.status !== status;
+  const statusChanged = status !== null && existingState.status !== status;
 
   const priorityChanged =
-    priorityName !== null &&
-    existingState.priority !== priorityName;
+    priorityName !== null && existingState.priority !== priorityName;
 
   const assigneeChanged =
-    assignedTo !== null &&
-    existingState.assigned_to !== assignedTo;
+    assignedTo !== null && existingState.assigned_to !== assignedTo;
+
+  const urgencyChanged =
+    urgencyName !== null &&
+    existingState.urgency != null &&
+    existingState.urgency !== urgencyName;
+
+  const impactChanged =
+    impactName !== null &&
+    existingState.impact != null &&
+    existingState.impact !== impactName;
+
+  const typeChanged =
+    typeName !== null &&
+    existingState.ticket_type != null &&
+    existingState.ticket_type !== typeName;
 
   const shouldNotifyReporter =
     statusChanged ||
     priorityChanged ||
-    assigneeChanged;
+    assigneeChanged ||
+    urgencyChanged ||
+    impactChanged ||
+    typeChanged;
 
   console.log("Change detection:", {
     statusChanged,
@@ -218,16 +213,48 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
   // ==================================================
 
   if (shouldNotifyReporter) {
-    await notifyReporter(
-      updatedState.reporter_slack_user_id,
-      ticket
-    );
+    await notifyReporter(updatedState.reporter_slack_user_id, ticket);
 
     console.log(`Reporter notified for Ticket #${ticketId}`);
   } else {
     console.log(
-      `No meaningful change - reporter DM skipped for Ticket #${ticketId}`
+      `No meaningful change - reporter DM skipped for Ticket #${ticketId}`,
     );
+  }
+
+  const changes = [];
+
+  if (urgencyChanged)
+    changes.push(`🚨 Urgency: ${existingState.urgency} → ${urgencyName}`);
+
+  if (impactChanged)
+    changes.push(`🎯 Impact: ${existingState.impact} → ${impactName}`);
+
+  if (typeChanged)
+    changes.push(`📋 Type: ${existingState.ticket_type} → ${typeName}`);
+
+  if (priorityChanged && existingState.priority != null)
+    changes.push(`⚡ Priority: ${existingState.priority} → ${priorityName}`);
+
+  if (changes.length && updatedState.reporter_slack_user_id) {
+    const response = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channel: updatedState.reporter_slack_user_id,
+        text:
+          `🎫 *Ticket #${ticketId} — Details Updated*\n\n` + changes.join("\n"),
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!data.ok) {
+      throw new Error(`Change notification failed: ${data.error}`);
+    }
   }
 }
 
@@ -253,10 +280,7 @@ function createGlpiWebhookHandler() {
 
         return res.sendStatus(200);
       } catch (error) {
-        console.error(
-          "GLPI webhook processing failed:",
-          error.message
-        );
+        console.error("GLPI webhook processing failed:", error.message);
 
         return res.sendStatus(500);
       }
