@@ -1,26 +1,44 @@
+const { validateFileName, validateFileSize, readLimitedFile, validateFileContent } = require("./fileValidation");
+
 async function downloadSlackFile(file) {
-  const response = await fetch(file.url_private_download || file.url_private, {
-    headers: {
-      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-    },
-  });
+  const filename = file.name || `slack-file-${Date.now()}`;
+
+  validateFileName(filename);
+
+  if (file.size !== undefined) {
+    validateFileSize(Number(file.size), filename);
+  }
+
+  const response = await fetch(
+    file.url_private_download || file.url_private,
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      },
+    }
+  );
 
   if (!response.ok) {
     throw new Error(
-      `Slack file download failed: ${response.status} ${response.statusText}`,
+      `Slack file download failed: ${response.status} ${response.statusText}`
     );
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    filename: file.name || `slack-file-${Date.now()}`,
+  const downloadedFile = {
+    buffer: await readLimitedFile(response, filename),
+    filename,
     mimeType: file.mimetype || "application/octet-stream",
   };
+
+  validateFileContent(downloadedFile);
+
+  return downloadedFile;
 }
 
+
 async function uploadGlpiDocument(file, sessionToken) {
+  validateFileContent(file);
+
   const form = new FormData();
 
   const manifest = {
@@ -30,10 +48,7 @@ async function uploadGlpiDocument(file, sessionToken) {
     },
   };
 
-  form.append(
-    "uploadManifest",
-    JSON.stringify(manifest)
-  );
+  form.append("uploadManifest", JSON.stringify(manifest));
 
   form.append(
     "filename[0]",
@@ -73,12 +88,11 @@ async function uploadGlpiDocument(file, sessionToken) {
     );
   }
 
-  console.log(
-    `GLPI Document uploaded successfully: ID ${result.id}`
-  );
+  console.log(`GLPI Document uploaded successfully: ID ${result.id}`);
 
   return result.id;
 }
+
 
 async function attachDocumentToTicket(documentId, ticketId, sessionToken) {
   const response = await fetch(

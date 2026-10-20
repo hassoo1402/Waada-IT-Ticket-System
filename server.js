@@ -538,6 +538,30 @@ app.post(
             return res.sendStatus(200);
           }
 
+          if (files.length > MAX_FILES) {
+            throw new Error("Maximum 3 files allowed per follow-up");
+          }
+
+          let declaredTotal = 0;
+
+          for (const file of files) {
+            validateFileName(file.name);
+            validateFileSize(Number(file.size), file.name);
+            declaredTotal += Number(file.size);
+          }
+
+          if (declaredTotal > MAX_TOTAL_SIZE) {
+            throw new Error("Combined files exceed 10 MB");
+          }
+
+          const downloadedFiles = [];
+
+          for (const file of files) {
+            downloadedFiles.push(await downloadSlackFile(file));
+          }
+
+          validateFileBatch(downloadedFiles);
+
           // Text follow-up
           if (followupText) {
             console.log(
@@ -560,11 +584,7 @@ app.post(
           if (files.length > 0) {
             const sessionToken = await getGlpiLegacySession();
 
-            for (const slackFile of files) {
-              console.log(`Downloading Slack file: ${slackFile.name}`);
-
-              const downloadedFile = await downloadSlackFile(slackFile);
-
+            for (const downloadedFile of downloadedFiles) {
               const documentId = await uploadGlpiDocument(
                 downloadedFile,
                 sessionToken,

@@ -1,7 +1,5 @@
-const {
-  getTicketMapping,
-  saveReporterDmDetails,
-} = require("./ticketMapping");
+const { getTicketMapping, saveReporterDmDetails } = require("./ticketMapping");
+const { validateFileName, validateFileSize, readLimitedFile, validateFileContent, validateFileBatch } = require("./fileValidation");
 
 async function notifyReporter(slackUserId, ticket) {
   if (!slackUserId) return;
@@ -131,14 +129,24 @@ async function notifyReporterAboutFollowup(
 
   if (followupId) {
     try {
-      const images = await getFollowupImages(followupId);
+      const attachments = await getFollowupAttachments(followupId);
 
-      for (const image of images) {
-        await uploadImageToSlack(data.channel, data.ts, image);
+      validateFileBatch(attachments);
+
+      for (const file of attachments) {
+        try {
+          await uploadFileToSlack(data.channel, data.ts, file);
+          console.log(`Attachment sent: ${file.filename}`);
+        } catch (error) {
+          console.error(
+            `Attachment upload failed (${file.filename}):`,
+            error.message,
+          );
+        }
       }
     } catch (error) {
       console.error(
-        `Followup image notification failed for Ticket #${ticketId}:`,
+        `Followup attachment notification failed for Ticket #${ticketId}:`,
         error.message,
       );
     }
@@ -215,7 +223,7 @@ async function notifyAssignedHandler(slackUserId, ticket) {
   console.log(`Assigned handler notified for Ticket #${ticket.id}`);
 }
 
-async function getFollowupImages(followupId) {
+async function getFollowupAttachments(followupId) {
   const { getGlpiLegacySession } = require("./glpiAuth");
   const sessionToken = await getGlpiLegacySession();
 
@@ -226,7 +234,7 @@ async function getFollowupImages(followupId) {
 
   const linksResponse = await fetch(
     `${process.env.GLPI_LEGACY_URL}/ITILFollowup/${followupId}/Document_Item/`,
-    { headers }
+    { headers },
   );
 
   if (!linksResponse.ok) {
@@ -237,50 +245,74 @@ async function getFollowupImages(followupId) {
 
   const linkedDocuments = links.filter((item) => Number(item.documents_id) > 0);
 
-  const images = [];
+  if (linkedDocuments.length > MAX_FILES) {
+    throw new Error("Maximum 3 attachments allowed per follow-up");
+  }
+
+  const attachments = [];
+  let totalSize = 0;
 
   for (const link of linkedDocuments) {
     const documentId = Number(link.documents_id);
 
-    const metadataResponse = await fetch(
-      `${process.env.GLPI_LEGACY_URL}/Document/${documentId}`,
-      { headers }
-    );
+    try {
+      const metadataResponse = await fetch(
+        `${process.env.GLPI_LEGACY_URL}/Document/${documentId}`,
+        { headers },
+      );
 
-    if (!metadataResponse.ok) {
-      throw new Error(`GLPI document metadata failed: ${metadataResponse.status}`);
-    }
-
-    const metadata = await metadataResponse.json();
-
-    if (!["image/png", "image/jpeg"].includes(metadata.mime)) {
-      continue;
-    }
-
-    const fileResponse = await fetch(
-      `${process.env.GLPI_LEGACY_URL}/Document/${documentId}?alt=media`,
-      {
-        headers: {
-          ...headers,
-          Accept: "application/octet-stream",
-        },
+      if (!metadataResponse.ok) {
+        throw new Error(`GLPI metadata failed: ${metadataResponse.status}`);
       }
-    );
 
-    if (!fileResponse.ok) {
-      throw new Error(`GLPI image download failed: ${fileResponse.status}`);
+      const metadata = await metadataResponse.json();
+      const filename = metadata.filename || `document-${documentId}`;
+
+      validateFileName(filename);
+
+      if (metadata.size !== undefined && metadata.size !== null) {
+        validateFileSize(Number(metadata.size), filename);
+      }
+
+      const fileResponse = await fetch(
+        `${process.env.GLPI_LEGACY_URL}/Document/${documentId}?alt=media`,
+        {
+          headers: {
+            ...headers,
+            Accept: "application/octet-stream",
+          },
+        },
+      );
+
+      if (!fileResponse.ok) {
+        throw new Error(`GLPI file download failed: ${fileResponse.status}`);
+      }
+
+      const file = {
+        filename,
+        buffer: await readLimitedFile(fileResponse, filename),
+      };
+
+      validateFileContent(file);
+
+      totalSize += file.buffer.length;
+
+      if (totalSize > MAX_TOTAL_SIZE) {
+        throw new Error("Combined files exceed 10 MB");
+      }
+
+      attachments.push(file);
+    } catch (error) {
+      console.error(`Document #${documentId} rejected:`, error.message);
     }
-
-    images.push({
-      filename: metadata.filename,
-      buffer: Buffer.from(await fileResponse.arrayBuffer()),
-    });
   }
 
-  return images;
+  return attachments;
 }
 
-async function uploadImageToSlack(channelId, threadTs, image) {
+async function uploadFileToSlack(channelId, threadTs, file) {
+  validateFileContent(file);
+
   const token = process.env.SLACK_BOT_TOKEN;
 
   const uploadResponse = await fetch(
@@ -292,8 +324,8 @@ async function uploadImageToSlack(channelId, threadTs, image) {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
-        filename: image.filename,
-        length: String(image.buffer.length),
+        filename: file.filename,
+        length: String(file.buffer.length),
       }),
     },
   );
@@ -309,7 +341,7 @@ async function uploadImageToSlack(channelId, threadTs, image) {
     headers: {
       "Content-Type": "application/octet-stream",
     },
-    body: image.buffer,
+    body: file.buffer,
   });
 
   if (!binaryResponse.ok) {
@@ -328,19 +360,19 @@ async function uploadImageToSlack(channelId, threadTs, image) {
         files: [
           {
             id: uploadData.file_id,
-            title: image.filename,
+            title: file.filename,
           },
         ],
         channel_id: channelId,
         thread_ts: threadTs,
       }),
-    }
+    },
   );
 
   const completeData = await completeResponse.json();
 
   if (!completeResponse.ok || !completeData.ok) {
-    throw new Error(`Slack image sharing failed: ${completeData.error}`);
+    throw new Error(`Slack file sharing failed: ${completeData.error}`);
   }
 }
 
@@ -348,6 +380,6 @@ module.exports = {
   notifyReporter,
   notifyReporterAboutFollowup,
   notifyAssignedHandler,
-  uploadImageToSlack,
-  getFollowupImages,
+  uploadFileToSlack,
+  getFollowupAttachments,
 };
