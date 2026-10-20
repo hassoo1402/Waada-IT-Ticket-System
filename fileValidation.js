@@ -1,5 +1,6 @@
 
 const path = require("node:path");
+const JSZip = require("jszip");
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024;
@@ -73,9 +74,51 @@ async function readLimitedFile(response, filename) {
   return Buffer.concat(chunks, total);
 }
 
+async function validateOfficeDocument(buffer, extension) {
+  const zip = await JSZip.loadAsync(buffer, {
+    checkCRC32: true,
+    createFolders: false,
+  });
+
+  const requiredFiles =
+    extension === ".docx"
+      ? ["[Content_Types].xml", "_rels/.rels", "word/document.xml"]
+      : ["[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"];
+
+  for (const filename of requiredFiles) {
+    if (!zip.file(filename)) {
+      throw new Error(`Invalid Office document: missing ${filename}`);
+    }
+  }
+
+  let totalUncompressed = 0;
+
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue;
+
+    if (entry.name.includes("..") || entry.name.startsWith("/")) {
+      throw new Error("Unsafe Office document path");
+    }
+
+    const size = entry._data?.uncompressedSize;
+
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error("Invalid Office document entry size");
+    }
+
+    totalUncompressed += size;
+
+    if (totalUncompressed > 25 * 1024 * 1024) {
+      throw new Error("Office document exceeds decompressed size limit");
+    }
+  }
+
+  return true;
+}
+
 // Validate actual file contents, not just the extension.
 // OOXML formats (DOCX/XLSX) are ZIP containers internally.
-function validateFileContent(file) {
+async function validateFileContent(file) {
   const extension = validateFileName(file.filename);
   const buffer = file.buffer;
 
@@ -121,11 +164,9 @@ function validateFileContent(file) {
     if (!isZip) {
       throw new Error(`Invalid Office document: ${file.filename}`);
     }
-    // ZIP header alone is insufficient: Office package structure
-    // must be verified separately before production deployment.
-    throw new Error(
-      `Office document structural validation not yet configured: ${file.filename}`
-    );
+
+    await validateOfficeDocument(buffer, extension);
+    return true;
   }
 
   if (isZip) {
@@ -141,7 +182,7 @@ function validateFileContent(file) {
   return true;
 }
 
-function validateFileBatch(files) {
+async function validateFileBatch(files) {
   if (files.length > MAX_FILES) {
     throw new Error("Maximum 3 files allowed per follow-up");
   }
@@ -149,7 +190,7 @@ function validateFileBatch(files) {
   let total = 0;
 
   for (const file of files) {
-    validateFileContent(file);
+    await validateFileContent(file);
     total += file.buffer.length;
 
     if (total > MAX_TOTAL_SIZE) {

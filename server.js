@@ -565,7 +565,7 @@ app.post(
             downloadedFiles.push(await downloadSlackFile(file));
           }
 
-          validateFileBatch(downloadedFiles);
+          await validateFileBatch(downloadedFiles);
 
           // Text follow-up
           if (followupText) {
