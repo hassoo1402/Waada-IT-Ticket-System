@@ -164,4 +164,7 @@ module.exports = {
     readLimitedFile,
     validateFileContent,
     validateFileBatch,
+    MAX_FILE_SIZE,
+    MAX_TOTAL_SIZE,
+    MAX_FILES
 }

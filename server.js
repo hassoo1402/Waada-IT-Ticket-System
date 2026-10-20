@@ -24,6 +24,11 @@ const {
   attachDocumentToTicket,
 } = require("./TicketImageHandler");
 const { getGlpiLegacySession } = require("./glpiAuth");
+const { validateFileName,
+  validateFileSize,
+  validateFileBatch,
+  MAX_FILES, MAX_TOTAL_SIZE
+} = require("./fileValidation");
 
 const pool = require("./db");
 
