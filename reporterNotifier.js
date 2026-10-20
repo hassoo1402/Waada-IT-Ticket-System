@@ -1,5 +1,5 @@
 const { getTicketMapping, saveReporterDmDetails } = require("./ticketMapping");
-const { validateFileName, validateFileSize, readLimitedFile, validateFileContent, validateFileBatch } = require("./fileValidation");
+const { validateFileName, validateFileSize, readLimitedFile, validateFileContent, validateFileBatch, MAX_FILES, MAX_TOTAL_SIZE } = require("./fileValidation");
 
 async function notifyReporter(slackUserId, ticket) {
   if (!slackUserId) return;
