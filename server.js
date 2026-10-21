@@ -24,10 +24,12 @@ const {
   attachDocumentToTicket,
 } = require("./TicketImageHandler");
 const { getGlpiLegacySession } = require("./glpiAuth");
-const { validateFileName,
+const {
+  validateFileName,
   validateFileSize,
   validateFileBatch,
-  MAX_FILES, MAX_TOTAL_SIZE
+  MAX_FILES,
+  MAX_TOTAL_SIZE,
 } = require("./fileValidation");
 
 const pool = require("./db");
@@ -178,6 +180,7 @@ async function getGlpiAccessToken() {
   return data.access_token;
 }
 
+
 async function createGlpiTicket(ticket) {
   const accessToken = await getGlpiAccessToken();
 
@@ -191,12 +194,20 @@ async function createGlpiTicket(ticket) {
 
   const priority = priorityMap[ticket.priority?.toLowerCase()] || 3;
 
+  const reporterEmail = ticket.slackEmail;
+  let reporterGlpiId = null;
+
+  if (reporterEmail) {
+    reporterGlpiId = await getReporterGlpiEmail(reporterEmail, accessToken);
+  }
+
   const payload = {
     name: ticket.issue,
 
     content: `Department: ${ticket.department}
 Reported At: ${ticket.createdAt}
 Slack User: ${ticket.slackUser}
+Slack User Email: ${ticket.slackUserEmail}
 Slack Channel: ${ticket.slackChannel}
 
 Description:
@@ -206,6 +217,9 @@ ${ticket.description}`,
     impact: priority,
     priority: priority,
     type: 1,
+    ...(reporterGlpiId && {
+      _users_id_requester: reporterGlpiId,
+    }),
   };
 
   const response = await fetch(
@@ -221,8 +235,6 @@ ${ticket.description}`,
   );
 
   const result = await response.json();
-  const ticketId = result.id;
-  //   const reporterGlpiId = await getReporterGlpiId(ticket.slackUserId);
 
   if (!response.ok) {
     throw new Error(
@@ -341,9 +353,10 @@ async function getSlackUserName(userId) {
     return userId;
   }
 
-  return (
-    data.user.profile.display_name || data.user.real_name || data.user.name
-  );
+  return {
+    name: data.user.profile.display_name || data.user.real_name || data.user.name,
+    email: data.user.profile?.email || null, 
+  };
 }
 
 async function getSlackChannelName(channelId) {
@@ -702,7 +715,7 @@ app.post(
 
         const slackDate = new Date(Number(event.ts) * 1000);
 
-        const slackUserName = await getSlackUserName(event.user);
+        const slackUserInfo = await getSlackUserName(event.user);
         const slackChannelName = await getSlackChannelName(event.channel);
 
         // 4. Ticket object
@@ -713,7 +726,8 @@ app.post(
           priority: priority,
 
           slackChannel: slackChannelName,
-          slackUser: slackUserName,
+          slackUser: slackUserInfo.name,
+          slackUserEmail: slackUserInfo.email,
           slackTimestamp: event.ts,
           slackUserId: event.user,
 
@@ -751,7 +765,7 @@ app.post(
           const ticketId = glpiTicket.id;
 
           // ----------------------------------------
-          // 3. Assign handler in GLPI
+          // 3. Assign handler in GLPIF
           // ----------------------------------------
           await assignHandlerToTicket(ticketId, handlerId);
 
