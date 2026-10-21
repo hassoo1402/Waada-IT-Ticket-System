@@ -6,7 +6,6 @@ const {
   updateTicketState,
   getHandlerSlackUserId,
   getTicketBySlackThread,
-  getReporterGlpiId,
 } = require("./ticketMapping");
 const { buildTicketCard } = require("./ticketCardBuilder");
 const {
@@ -180,6 +179,25 @@ async function getGlpiAccessToken() {
   return data.access_token;
 }
 
+async function getReporterGlpiEmail(email, accessToken) {
+  const url = new URL(`${process.env.GLPI_URL}/api.php/v2.3/User`);
+  url.searchParams.set("filter", `email eq '${email.replace(/'/g, "''")}'`);
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GLPI user lookup failed: ${response.status}`);
+  }
+
+  const result = await response.json();
+  const users = Array.isArray(result) ? result : result.data || [];
+
+  return users.find(
+    (user) => user.email?.toLowerCase() === email.toLowerCase(),
+  )?.id || null;
+}
 
 async function createGlpiTicket(ticket) {
   const accessToken = await getGlpiAccessToken();
@@ -194,10 +212,11 @@ async function createGlpiTicket(ticket) {
 
   const priority = priorityMap[ticket.priority?.toLowerCase()] || 3;
 
-  const reporterEmail = ticket.slackEmail;
+  const reporterEmail = ticket.slackUserEmail;
   let reporterGlpiId = null;
 
   if (reporterEmail) {
+    console.log("Requester GLPI ID:", reporterGlpiId);
     reporterGlpiId = await getReporterGlpiEmail(reporterEmail, accessToken);
   }
 
@@ -347,6 +366,7 @@ async function getSlackUserName(userId) {
   );
 
   const data = await response.json();
+  
 
   if (!data.ok) {
     console.error("Slack users.info error:", data.error);

@@ -168,7 +168,6 @@ async function getHandlerSlackUserId(glpiUserId) {
 
 async function getRandomITNotificationRecipients(count = 2) {
   // IT notification pool:
-  // Hassam + saare active IT Executives
   const [rows] = await pool.query(
     `SELECT glpi_user_id, handler_name, slack_user_ids
      FROM handlers
