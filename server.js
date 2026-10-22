@@ -180,23 +180,53 @@ async function getGlpiAccessToken() {
 }
 
 async function getReporterGlpiEmail(email, accessToken) {
-  const url = new URL(`${process.env.GLPI_URL}/api.php/v2.3/User`);
-  url.searchParams.set("filter", `email eq '${email.replace(/'/g, "''")}'`);
+  const url = new URL(
+    `${process.env.GLPI_URL}/api.php/v2.3/Administration/User`
+  );
+
+  url.searchParams.set(
+    "filter",
+    `emails.email=="${email.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+  );
+  url.searchParams.set("limit", "10");
 
   const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
   });
 
   if (!response.ok) {
-    throw new Error(`GLPI user lookup failed: ${response.status}`);
+    throw new Error(
+      `GLPI user lookup failed: ${response.status} ${await response.text()}`
+    );
   }
 
-  const result = await response.json();
-  const users = Array.isArray(result) ? result : result.data || [];
+  const users = await response.json();
 
-  return users.find(
-    (user) => user.email?.toLowerCase() === email.toLowerCase(),
-  )?.id || null;
+  console.log("GLPI lookup:", {
+    status: response.status,
+    usersFound: Array.isArray(users) ? users.length : null,
+    matchedId: Array.isArray(users)
+      ? (users.find((user) =>
+          user.emails?.some(
+            (e) => e.email?.toLowerCase() === email.toLowerCase(),
+          ),
+        )?.id ?? null)
+      : null,
+  });
+
+  if (!Array.isArray(users)) {
+    throw new Error("Unexpected GLPI users response");
+  }
+
+  const matchedUser = users.find((user) =>
+    user.emails?.some(
+      (item) => item.email?.toLowerCase() === email.toLowerCase()
+    )
+  );
+
+  return matchedUser?.id ?? null;
 }
 
 async function createGlpiTicket(ticket) {
@@ -216,8 +246,8 @@ async function createGlpiTicket(ticket) {
   let reporterGlpiId = null;
 
   if (reporterEmail) {
-    console.log("Requester GLPI ID:", reporterGlpiId);
     reporterGlpiId = await getReporterGlpiEmail(reporterEmail, accessToken);
+    console.log("Requester GLPI ID:", reporterGlpiId);
   }
 
   const payload = {
@@ -236,9 +266,6 @@ ${ticket.description}`,
     impact: priority,
     priority: priority,
     type: 1,
-    ...(reporterGlpiId && {
-      _users_id_requester: reporterGlpiId,
-    }),
   };
 
   const response = await fetch(
@@ -259,6 +286,12 @@ ${ticket.description}`,
     throw new Error(
       `GLPI ticket creation failed: ${response.status} ${JSON.stringify(result)}`,
     );
+  }
+
+  // Assign Slack reporter as GLPI requester
+  if (reporterGlpiId != null) {
+    await assignRequesterToTicket(result.id, reporterGlpiId);
+    console.log("Requester assigned successfully:", reporterGlpiId);
   }
 
   return result;
@@ -353,6 +386,30 @@ async function assignHandlerToTicket(ticketId, handlerId) {
   }
 
   return text;
+}
+
+async function assignRequesterToTicket(ticketId, reporterGlpiId) {
+  const accessToken = await getGlpiAccessToken();
+
+  const response = await fetch(
+    `${process.env.GLPI_URL}/api.php/v2.3/Assistance/Ticket/${ticketId}/TeamMember`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "User",
+        id: reporterGlpiId,
+        role: "requester",
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Requester assignment failed: ${response.status} ${await response.text()}`);
+  }
 }
 
 async function getSlackUserName(userId) {
