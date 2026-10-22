@@ -1257,18 +1257,9 @@ app.post(
         // ----------------------------------------
         // 12. Reporter ko status-change DM
         // ----------------------------------------
-        console.log("ABOUT TO NOTIFY REPORTER");
-        console.log("Reporter Slack ID:", updatedState.reporter_slack_user_id);
-        console.log("Fresh status:", freshTicket.status?.name);
 
-
-        console.log("ABOUT TO NOTIFY REPORTER:", Date.now() - startTime, "ms");
 
         await notifyReporter(updatedState.reporter_slack_user_id, freshTicket);
-
-        console.log("REPORTER DM COMPLETED:", Date.now() - startTime, "ms");
-
-        console.log("REPORTER NOTIFY FINISHED");
 
         console.log(`Reporter notified for Ticket #${ticketId}`);
 
