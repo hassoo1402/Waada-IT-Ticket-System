@@ -222,27 +222,27 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
     );
   }
 
-  // if (assigneeChanged && updatedState.reporter_slack_user_id) {
-  //   const response = await fetch("https://slack.com/api/chat.postMessage", {
-  //     method: "POST",
-  //     headers: {
-  //       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-  //       "Content-Type": "application/json",
-  //     },
-  //     body: JSON.stringify({
-  //       channel: updatedState.reporter_slack_user_id,
-  //       text: `🎫 *Ticket #${ticketId} Reassigned*\n👤 *Assigned To:* ${assignedTo}`,
-  //     }),
-  //   });
+  if (assigneeChanged && updatedState.reporter_slack_user_id) {
+    const response = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channel: updatedState.reporter_slack_user_id,
+        text: `🎫 *Ticket #${ticketId} Reassigned*\n👤 *Assigned To:* ${assignedTo}`,
+      }),
+    });
 
-  //   const data = await response.json();
+    const data = await response.json();
 
-  //   if (!response.ok || !data.ok) {
-  //     throw new Error(`Reassignment notification failed: ${data.error || response.status}`);
-  //   }
+    if (!response.ok || !data.ok) {
+      throw new Error(`Reassignment notification failed: ${data.error || response.status}`);
+    }
 
-  //   console.log(`Reassignment DM sent for Ticket #${ticketId}`);
-  // }
+    console.log(`Reassignment DM sent for Ticket #${ticketId}`);
+  }
 
   const changes = [];
 

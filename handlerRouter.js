@@ -100,7 +100,9 @@ async function selectHandler(issue) {
     text.includes("deployment") ||
     text.includes("pipeline") ||
     text.includes("ci/cd") ||
-    text.includes("bitbucket")
+    text.includes("bitbucket") || 
+    text.includes("database") || 
+    text.includes("ci / cd")
   ) {
     return 11;
   }
