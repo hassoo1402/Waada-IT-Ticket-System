@@ -102,7 +102,8 @@ async function selectHandler(issue) {
     text.includes("ci/cd") ||
     text.includes("bitbucket") || 
     text.includes("database") || 
-    text.includes("ci / cd")
+    text.includes("ci / cd") || 
+    text.includes("server")
   ) {
     return 11;
   }
@@ -129,7 +130,6 @@ async function selectHandler(issue) {
 
   if (
     text.includes("network") ||
-    text.includes("server") ||
     text.includes("firewall") ||
     text.includes("vpn") ||
     text.includes("switch") ||

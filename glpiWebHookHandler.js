@@ -196,6 +196,9 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
     priority: priorityName,
     assignedTo,
     status,
+    urgency: urgencyName,
+    impact: impactName,
+    ticketType: typeName,
   });
 
   const updatedState = await getTicketMapping(ticketId);
@@ -238,7 +241,9 @@ async function processGlpiWebhook(payload, getGlpiTicket) {
     const data = await response.json();
 
     if (!response.ok || !data.ok) {
-      throw new Error(`Reassignment notification failed: ${data.error || response.status}`);
+      throw new Error(
+        `Reassignment notification failed: ${data.error || response.status}`,
+      );
     }
 
     console.log(`Reassignment DM sent for Ticket #${ticketId}`);
